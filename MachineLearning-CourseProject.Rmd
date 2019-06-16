@@ -1,0 +1,237 @@
+---
+title: "Machine Learning - Course Project"
+author: "Carlos Ochoa"
+date: "6 de junio de 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+## Abstract
+
+The pourpose of this exercise is to develop a predictive algorithm that accurately identifies how well 5 different activities are performed, using different biometric measures collected by means of wearables. First, we inspect the dataset and identify the most suitable predictors to be used in the solution. Then we tried different aproaches to predict activities. Finally, we select the most convenient one.
+
+##Data exploration
+
+We have at our disposal two different datasets (training and testing). Both datasets have 160 different variables, but while the training dataset contains the target variables (classe = manner in which the exercise was made), the testing dataset contains instead the problem_id variable that identifies the user to be predicted.
+
+The testing dataset does not contain the outcome, so we cannot use it to measure the out-of-sample performance. To overcome this difficulty, we split the training dataset in two datasets: training and validation. The validation dataset will be used only to estimate the out-of-sample accuracy of the algorithm.
+
+```{r loadingData, warning=FALSE, cache=TRUE}
+#Loading libraries
+library(caret)
+library(AppliedPredictiveModeling)
+library(varhandle)
+library(knitr)
+#Reading and splitting dataset
+set.seed(44323)
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+inTrain = createDataPartition(training$classe, p = 3/4)[[1]]
+validation = training[-inTrain,]
+training = training[ inTrain,]
+
+```
+
+## Data processing
+
+After an inspection of the dataset, we can take some measures to facilitate the prediction task:
+
+- The variables 1 to 7 seem irrelevant for our purpose (user identity, timestamp,...), at least for the degree of sofistication we want. We delete such variables from our dataset.
+- All the remaining predictors can be converted to numerical variables. By doing so we help the algorithms to work faster and we can use Principal Components Analysis.
+- Some predictors have a lot of missing values. This will difficult the execution of some algorithms, so we impute missing values using a knn imputation. We also center and scale variables.
+- We execute a Principal Component Analysis to reduce the large amount of predictors. We create 2 different datasets, retaining components up to 80% (color red in the plot) and 95% of the variance (color blue). These reduced datasets have been used to explore the best predictive algorithm, but the final version does not use PCA. However, working with a reduced number of predictors help to make decisions regarding the algorithm to be used, without long waiting times.
+
+```{r processing, warning=FALSE, error=FALSE, cache=TRUE}
+#Deleting first 7 col
+training<-training[,-c(1:7)]
+validation<-validation[,-c(1:7)]
+testing<-testing[,-c(1:7)]
+
+#Remove predicted variable (classe) + problem_id variable
+training.predicted<-training[,"classe"]
+validation.predicted<-validation[,"classe"]
+testing.problemid<-testing[,"problem_id"]
+training<-subset(training,select=-classe)
+validation<-subset(validation,select=-classe)
+testing<-subset(testing,select=-problem_id)
+
+#Transforming into numerical
+training<-sapply(training,as.numeric)
+validation<-sapply(validation,as.numeric)
+testing<-sapply(testing,as.numeric)
+
+#Size of each dataset
+dim(training)
+dim(validation)
+dim(testing)
+
+#Imputation, scaling, centering
+preProc<-preProcess(training,method=c("center","scale","knnImpute"))
+training.processed<-predict(preProc,training)  
+
+#Principal analysis component, only on numerical + integer variables
+prComp<-prcomp(training.processed)
+cum.variance<-cumsum( prComp$sdev^2/sum(prComp$sdev^2))
+num.components80<-sum(cum.variance<0.8)
+num.components95<-sum(cum.variance<0.95)
+
+training.prcomp80 <- prComp$x[,1:num.components80]
+training.prcomp95 <- prComp$x[,1:num.components95]
+
+barplot((prComp$sdev^2/sum(prComp$sdev^2))[1:50],xlab="# component",ylab="% variance", main="PCA: variance per component") + 
+  abline(v=num.components80, col="red") + 
+  abline(v=num.components95, col="blue") +
+  text(num.components80,0.1,"80%") +
+  text(num.components95,0.1,"95%")
+
+```
+##Model selection
+
+Up to this point we have several training datasets, with different processing methods. And we want to explore different predicting algorithms.
+
+Training datasets:
+
+- Training.processed: all the variables converted to numerical.
+- Training.prcomp80: PCA components retained up to 80% of variance.
+- Training.prcomp95: Idem but 95% of variance.
+
+Models to be explored:
+
+- Rpart: CART Tree model.
+- Rf: Random forest.
+- Lda: Linear discriminant analysis.
+
+For each combination, a model is trained and its accuracy evaluated for the training set. Then, the out-of-sample accuracy is evaluated with the validation set. To do so, the validation set is processed in the same way than the training set.
+
+```{r modelFitting, cache=TRUE,warning=FALSE}
+#Model: cart
+mod.cart<-train(training.processed,training.predicted, method="rpart")
+mod.cart80<-train(training.prcomp80,training.predicted, method="rpart")
+mod.cart95<-train(training.prcomp95,training.predicted, method="rpart")
+
+#Model: rf
+mod.rf<-train(training.processed,training.predicted, method="rf")
+mod.rf80<-train(training.prcomp80,training.predicted, method="rf")
+mod.rf95<-train(training.prcomp95,training.predicted, method="rf")
+
+#Model: lda
+mod.lda<-train(training.processed,training.predicted, method="lda")
+mod.lda80<-train(training.prcomp80,training.predicted, method="lda")
+mod.lda95<-train(training.prcomp95,training.predicted, method="lda")
+
+#Validation processing
+validation.processed<-predict(preProc,validation)
+prCompValidation<-predict(prComp,validation.processed)
+validation.prcomp80 <- prCompValidation[,1:num.components80]
+validation.prcomp95 <- prCompValidation[,1:num.components95]
+
+#Calculate accuracy on training data and validation data
+acc.training.cart<-c(
+  max(mod.cart$results$Accuracy),
+  max(mod.cart80$results$Accuracy),
+  max(mod.cart95$results$Accuracy)
+)
+
+acc.validation.cart<-c(
+  mean(validation.predicted==predict(mod.cart,validation.processed)),
+  mean(validation.predicted==predict(mod.cart80,validation.prcomp80)),
+  mean(validation.predicted==predict(mod.cart95,validation.prcomp95))
+)
+
+acc.training.rf<-c(
+  max(mod.rf$results$Accuracy),
+  max(mod.rf80$results$Accuracy),
+  max(mod.rf95$results$Accuracy)
+)
+
+acc.validation.rf<-c(
+  mean(validation.predicted==predict(mod.rf,validation.processed)),
+  mean(validation.predicted==predict(mod.rf80,validation.prcomp80)),
+  mean(validation.predicted==predict(mod.rf95,validation.prcomp95))
+)
+
+acc.training.lda<-c(
+  max(mod.lda$results$Accuracy),
+  max(mod.lda80$results$Accuracy),
+  max(mod.lda95$results$Accuracy)
+)
+
+acc.validation.lda<-c(
+  mean(validation.predicted==predict(mod.lda,validation.processed)),
+  mean(validation.predicted==predict(mod.lda80,validation.prcomp80)),
+  mean(validation.predicted==predict(mod.lda95,validation.prcomp95))
+)
+
+```
+
+A summary of the accuracy of each method, estimated by caret with the training data and with the validation data set, is shown below.
+
+```{r accuracy, cache=TRUE,warning=FALSE}
+library(knitr)
+
+accuracy.summary <- data.frame(
+  c("Data processed","PCA 80%","PCA 95"),
+  acc.training.cart,acc.validation.cart,
+  acc.training.rf,acc.validation.rf,
+  acc.training.lda,acc.validation.lda
+)
+names(accuracy.summary)<-c("Data",
+                           "Accuracy training Cart",
+                           "Accuracy validation Cart",
+                           "Accuracy training Rf",
+                           "Accuracy validation Rf",
+                           "Accuracy training lda",
+                           "Accuracy validation Lda")
+
+kable(accuracy.summary,caption="Accuracy summary for each model and data processing", digits=4)
+
+
+```
+
+
+Results show that the processing without PCA and the model RF are the best combination. For such model, we elaborate a confusion matrix to see if we are performing differently in each one of the 5 predicted classes.
+
+```{r confusion, message=FALSE, cache=FALSE, warning=FALSE}
+library(caret)
+library(knitr)
+confMat <- confusionMatrix(
+  validation.predicted,
+  predict(mod.rf,validation.processed)
+)
+
+kable(confMat$table,caption="Confusion matrix")
+
+```
+
+We also print the most relevant predictors for the algoritm.
+
+
+```{r varImp, cache=TRUE}
+
+varImp(mod.rf)
+
+```
+## Prediction on testing dataset
+
+Finally, a prediction on the blind testing data set is made. We cannot evaluate the accuracy in such data set as the predictor "classe"" is not provided. However, after completing the questionnaire provided by the course we verify a 100% accuracy.
+
+```{r predict, cache=TRUE}
+#Testing processing
+testing.processed<-predict(preProc,testing)
+prCompTesting<-predict(prComp,testing.processed)
+
+prediction.testing<-data.frame(
+  problem_id=testing.problemid,
+  prediction=predict(
+    mod.rf,
+    testing.processed)
+)
+
+kable(prediction.testing,caption="Prediction")
+
+```
